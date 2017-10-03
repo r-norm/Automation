@@ -1,0 +1,49 @@
+# Th .net setting below this line will cause the script to ignore a certificate check. Currently commented out as Elk prod cluster has valid cert. API Queries will fail if they have valid certs and this is left on(Service Now in particular here).
+#[Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+
+
+#Setting global user creds. You will need to generate a secure string, convert it to a txt file, then reference that txt file for the passstr variable. This circumvents passwords being stored locally in clear text. 
+$user = "rest.elasticsearch"
+#$passstr = get-content "D:\PSTempRunspace\SecureCredString.txt"
+#$pass = $passstr | ConvertTo-SecureString
+$pass = ConvertTo-SecureString “#password” -AsPlainText -Force
+$creds = New-Object System.Management.Automation.PSCredential -ArgumentList $user, $pass
+
+
+
+#Function to retrieve incidents from Service Now and add them to Elasticsearch
+function Get-Incidents{
+
+    #Gets current date from machine enviornment variable and builds the index name for elastisearch with that information. Month is separated into its own variable to convert it to two digit.
+    $mm = get-date -Format MM
+    $dd = get-date -Format dd
+    $date= Get-Date
+    $indexname = "sn-" + $date.year + "." + $mm + "." + $dd
+    
+    #Building Service Now Get Request for Incident table
+    $headers = @{
+        “Accept” = “application/json”
+        }
+    $result = Invoke-RestMethod -Credential $creds -Headers $headers -Method Get -Uri "https://SNINSTANCE.service-now.com/api/now/table/incident?sysparm_limit=1000&sysparm_query=opened_at%3Ejavascript:gs.minutesAgo(75)&sysparm_fields=number,assignment_group.u_display_name,priority,short_description,u_region.name,u_facility.name,location.name,cmdb_ci.name,category,u_subcategory.u_subcategory,u_subclass.name,%20opened_at&state!=-5"
+    $fmresult = $result.result
+
+    #Loop to break out contents of previous Get Request and modify some of the field names, then upload to Elasticsearch
+    foreach ($item in $fmresult) {
+    $id = $item.number
+    $uri = "https://HOSTNAME.carenet.org:9200/" + $indexname + "/incidents/" + $id
+    $json = $item | ConvertTo-Json -Depth 100
+    $mod = $json -replace 'opened_at', 'timestamp'
+
+
+
+
+    Invoke-RestMethod -Credential $creds -Method Post -Uri $uri -ContentType 'application/json'-Body $mod -Verbose
+
+    $mod
+
+    }
+}
+
+
+#Entry point for script
+Get-Incidents

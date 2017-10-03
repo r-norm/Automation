@@ -1,0 +1,166 @@
+#To do list
+#Integrate with ServiceNow ticket generation
+#Implement write-progress to gather amount of folders and users cleaned up
+#Create case switch menu
+#Add testing for 2003 server and cleaning appropriate user folders
+#Add counters for various bit of information to track(folders deleted, profiles removed, etc
+#Error supression on profile cleanup
+
+function Main-Script {
+    #Function to show free drive space and percent used
+    function Get-Space{
+        $Drive = Get-WMIObject Win32_Logicaldisk -filter "deviceid='C:'" |
+        Select DeviceID, Size, Freespace,
+        @{Name="SizeGB";Expression={$_.Size/1GB -as [int]}},
+        @{Name="FreeGB";Expression={[math]::Round($_.Freespace/1GB,2)}}
+        $diff = ($Drive.Size - $Drive.Freespace)
+        $usage = ($diff/$Drive.Size).ToString("P")
+        $global:startspace = "Initial space information : $($Drive.FreeGB) GB free of $($Drive.SizeGB) GB. Drive $($usage) utilized."
+     
+    }
+
+
+    #Function to run DISM cleanup 
+    function Clean-DISM{
+        DISM /online /SCRATCHDIR:C:\ /Cleanup-Image /SpSuperseded
+        Write-Host
+    }
+
+
+    #Flush temp directories and files - done
+    function Clean-Folders {
+        $userfolder = Get-ChildItem C:\Users\
+        $users = $userfolder.Name
+        foreach ($user in $users){
+            $temppath = "C:\Users\" + $user + "\AppData\Local\Microsoft\Windows\Temporary Internet Files\*"
+            $tifpath = "C:\users\" + $user + "\AppData\Local\Temp\*"
+            Remove-Item $tifpath -recurse -force -ErrorAction SilentlyContinue
+            Remove-Item $temppath -recurse -force -ErrorAction SilentlyContinue
+        }
+
+        Remove-Item “C:\Temp\*” -recurse -force -ErrorAction SilentlyContinue
+        Remove-Item “C:\Windows\Temp\*” -recurse -force -ErrorAction SilentlyContinue
+        Remove-Item "C:\ProgramData\Microsoft\Windows\WER\ReportQueue\*" -recurse -force -ErrorAction SilentlyContinue
+        Remove-Item "C:\Program Files\Trend\SProtect\x64\Virus\*" -recurse -force -ErrorAction SilentlyContinue
+    }
+
+
+
+    #Function to detect if the server is a Citrix server, and to clean profiles accordingly
+    function Check-Citrix{
+        $servername = Get-ChildItem Env:COMPUTERNAME
+        $global:name = $servername.value
+        Write-Host
+        Write-Host "Checking if "$name "is a Citrix server"
+        Write-Host
+        if ($name -like '*xap*' -or $name -like '*ctx*'){
+            Write-Host "Server is a Citrix server. Cleaning profiles... "
+            Clean-Profiles -ErrorAction SilentlyContinue
+        }
+        else{
+            Write-Host "Not a Citrix server. Proceeding with script. "
+            Write-Host
+        }
+    }
+
+
+    #function to clean user profiles older than 60 days
+    function Clean-Profiles {
+        $ErrorActionPreference = “SilentlyContinue”
+        $profiles = Get-WmiObject win32_userprofile -filter 'special=False AND loaded=False'
+        if ($profiles){
+            $i = 0
+            #$i = $profiles.Count
+            #Write-Host "Found" $i "profiles to remove"
+            foreach($profile in $profiles){
+                $profile.Delete() 
+                $i++
+                Write-Progress -activity "Cleaning profiles . . ." -status "Removed: $i of $($profiles.Count)" -percentComplete (($i / $profiles.Count)  * 100)
+                #$i--
+                #Write-Host $i "profiles remaining"
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        else{
+        Start-Sleep -m 10
+        }
+        Write-Progress -activity "Cleaning profiles . . ." -status "Complete" -Completed
+    }
+
+
+    #Function to empty recycle bins 
+    function Clean-Recycle {
+        $Recycler = (New-Object -ComObject Shell.Application).NameSpace(0xa)
+        $Recycler.items() | foreach { rm $_.path -force -recurse }
+    }
+
+
+
+    #Function to clear Font Cache
+    function Clear-FontCache { 
+        get-childitem -path $env:systemroot\ServiceProfiles\LocalService\AppData\Local -filter FontCache-S*.dat | remove-item 
+    } 
+
+
+    #Function to clear out items in C:\Windows\SoftwareDistribution\Download older than 180 days
+    function Clear-SoftwareDistribution {
+        $Path = "C:\Windows\SoftwareDistribution\Download"
+        $Daysback = "-180"
+        $CurrentDate = Get-Date
+        $DatetoDelete = $CurrentDate.AddDays($Daysback)
+        Get-ChildItem $Path -Recurse  | Where-Object { $_.LastWriteTime -lt $DatetoDelete } | Remove-Item -recurse
+    }
+
+
+    #Function to alert the user of script completion and final results
+    function Final-Info {
+        $Drive = Get-WMIObject Win32_Logicaldisk -filter "deviceid='C:'" |
+        Select DeviceID, Size, Freespace,
+        @{Name="SizeGB";Expression={$_.Size/1GB -as [int]}},
+        @{Name="FreeGB";Expression={[math]::Round($_.Freespace/1GB,2)}}
+        $diff = ($Drive.Size - $Drive.Freespace)
+        $usage = ($diff/$Drive.Size).ToString("P")
+        $global:endspace = "Final space Information :  $($Drive.FreeGB) GB free of $($Drive.SizeGB) GB. Drive $($usage) utilized."
+    }
+
+
+Write-host
+Write-Host "Starting drive cleanup script..."
+Write-host
+Get-Space
+Clean-DISM
+Check-Citrix
+Clean-Folders
+Clean-Recycle
+Clear-FontCache
+Clear-SoftwareDistribution
+Final-Info
+cls
+write-host
+write-host "Clean up results for server : "$name
+write-host
+$startspace
+$endspace
+Write-host
+Write-Host "Press ENTER to close script"
+Read-Host
+
+}
+
+
+function Connect-Server{
+    $user = $env:USERNAME
+    $server = Read-Host "Please enter server name"
+
+    if (Test-Connection -ComputerName $server -count 2 -Quiet) {
+        Invoke-Command -ComputerName $server -ScriptBlock ${function:Main-Script}
+        }
+    else {
+        Write-Host
+        Write-Host "Server name invalid or server unreachable. Please enter server name again." -foregroundcolor red
+        Write-Host
+        Connect-Server
+        }
+    }
+
+Connect-Server
